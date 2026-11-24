@@ -53,7 +53,6 @@ __pycache__/
 # Editor
 .vscode/
 .idea/
-build-cuda/
 
 # saved reference voices are local data
 voices/

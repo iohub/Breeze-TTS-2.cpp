@@ -180,6 +180,36 @@ A CUDA build contains no Vulkan code at all, which is easy to confirm:
 ldd build-cuda/breeze-cli | grep -i vulkan   # no output
 ```
 
+#### Shared or one file
+
+On Linux the default build puts the ggml backends in shared libraries and `breeze-cli`
+finds them through its RUNPATH, so `./build-cuda/breeze-cli` runs straight out of the build
+tree. That convenience costs disk space: `libggml-cuda.so` alone is close to 200 MB, and
+every binary in the tree links it.
+
+For a single self contained file, the same shape the release archives have, ask for static
+ggml backends:
+
+```
+cmake -B build-cuda-static -DCMAKE_BUILD_TYPE=Release -DBREEZE_VULKAN=OFF -DBREEZE_CUDA=ON -DBUILD_SHARED_LIBS=OFF
+cmake --build build-cuda-static -j
+```
+
+`cmake --preset cuda-static` sets that command line up, and `cmake --build --preset
+cuda-static` is the build. Measured on this machine: 3.4 s to configure, 228 s to compile on
+14 threads, no errors, and a `breeze-cli` of 190 MiB. `ldd` then lists no `libggml*` at all
+and no Vulkan either, only the system libraries plus the CUDA runtime (`libcudart`,
+`libcublas`, `libcublasLt`, `libcuda`). One thing to know: `BUILD_SHARED_LIBS=OFF` only
+reaches ggml's backend libraries. `libbreeze.so` is declared `SHARED` explicitly, so it is
+still built.
+
+The architecture is still what the build machine probed, so the result runs on those cards
+only. Pass the list yourself when you hand the binary to someone else:
+
+```
+cmake --preset cuda-static -DCMAKE_CUDA_ARCHITECTURES="75;86"
+```
+
 ## Outputs
 
 | Target | Description |

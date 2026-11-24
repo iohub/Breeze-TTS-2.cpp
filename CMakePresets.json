@@ -38,6 +38,18 @@
         "BREEZE_VULKAN": "OFF",
         "BREEZE_CUDA": "ON"
       }
+    },
+    {
+      "name": "cuda-static",
+      "displayName": "CUDA, one self contained binary",
+      "description": "CUDA backend with static ggml backends, so the binaries need no libggml*.so and look like the release archives. Needs the CUDA toolkit (nvcc); the GPU architecture is probed from nvidia-smi.",
+      "binaryDir": "${sourceDir}/build-cuda-static",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BREEZE_VULKAN": "OFF",
+        "BREEZE_CUDA": "ON",
+        "BUILD_SHARED_LIBS": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -58,6 +70,12 @@
       "displayName": "Build the CUDA tree",
       "description": "Builds build-cuda.",
       "configurePreset": "cuda"
+    },
+    {
+      "name": "cuda-static",
+      "displayName": "Build the self contained CUDA tree",
+      "description": "Builds build-cuda-static.",
+      "configurePreset": "cuda-static"
     }
   ]
 }

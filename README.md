@@ -162,7 +162,9 @@ cmake --build build-cuda -j
 ```
 
 `cmake --preset cuda`, `--preset vulkan` and `--preset cpu` do the same three trees, the
-CUDA one included, and pick the local GPU architecture on their own.
+CUDA one included, and pick the local GPU architecture on their own. For one self contained
+binary with no `libggml*.so` next to it, add `-DBUILD_SHARED_LIBS=OFF` or use
+`cmake --preset cuda-static`.
 
 ### Nix
 

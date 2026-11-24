@@ -6,12 +6,14 @@
 | --- | --- |
 | CMake | 3.19 or newer |
 | C++17 compiler | mingw-w64 (winlibs UCRT), MSVC, gcc or clang |
-| Vulkan SDK | Only for the GPU backend. Provides `glslc` for shader compilation. |
+| Vulkan SDK | Only for the Vulkan backend. Provides `glslc`; the `SPIRV-Headers` CMake package is required too. |
+| CUDA toolkit | Only for the CUDA backend. Provides `nvcc`, which needs MSVC rather than mingw as its host compiler on Windows. |
 | Ninja | Optional but much faster than the default generator |
 | Python 3.9+ | Only for converting weights to GGUF |
 
-The Vulkan backend works on any driver exposing Vulkan 1.2, which covers
-NVIDIA, AMD and Intel on both Windows and Linux.
+The configure step probes which of these is installed, so a plain `cmake -B build`
+works either way. The Vulkan backend works on any driver exposing Vulkan 1.2, which
+covers NVIDIA, AMD and Intel on both Windows and Linux.
 
 ## Clone
 
@@ -30,26 +32,60 @@ git submodule update --init --recursive
 
 ## Configure and build
 
-GPU (Vulkan):
+Any GPU, whichever one the machine can actually build for. No backend flag is needed:
+Vulkan and CUDA are each turned on when their toolchain is found, and the CPU is always
+there. If both are found, both go into `libggml` and ggml picks one at runtime.
 
 ```
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
+```
+
+CUDA only, even on a machine that also has the Vulkan SDK:
+
+```
+cmake -B build-cuda -DCMAKE_BUILD_TYPE=Release -DBREEZE_VULKAN=OFF -DBREEZE_CUDA=ON
+cmake --build build-cuda -j
+```
+
+Vulkan only:
+
+```
+cmake -B build-vulkan -DCMAKE_BUILD_TYPE=Release -DBREEZE_VULKAN=ON -DBREEZE_CUDA=OFF
+cmake --build build-vulkan -j
 ```
 
 CPU only:
 
 ```
-cmake -B build-cpu -G Ninja -DCMAKE_BUILD_TYPE=Release -DBREEZE_VULKAN=OFF
+cmake -B build-cpu -DCMAKE_BUILD_TYPE=Release -DBREEZE_VULKAN=OFF -DBREEZE_CUDA=OFF
 cmake --build build-cpu -j
+```
+
+[CMakePresets.json](../CMakePresets.json) offers the same three trees as `cpu`,
+`vulkan` and `cuda`, which also name the build directory and set `Release`:
+
+```
+cmake --preset cuda
+cmake --build --preset cuda -j
+```
+
+The configure step prints what it settled on, which is worth a look:
+
+```
+-- breeze: Vulkan SDK not found (needs glslc + SPIRV-Headers), building without the Vulkan backend
+-- breeze: CUDA toolkit 12.1.105 found, enabling the CUDA backend
+-- breeze: building CUDA for the local GPU: sm_86
+-- breeze: backends = CPU;CUDA
 ```
 
 ## CMake options
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `BREEZE_VULKAN` | `ON` | Build ggml with the Vulkan backend. |
-| `BREEZE_CUDA` | `OFF` | Build ggml with the CUDA backend. Needs the CUDA toolkit, and MSVC on Windows. |
+| `BREEZE_VULKAN` | `auto` | Build ggml with the Vulkan backend. `auto` is probed from the installed toolchain, and is on only when `glslc` and the `SPIRV-Headers` CMake package are both found; passing an explicit value always wins. |
+| `BREEZE_CUDA` | `auto` | Build ggml with the CUDA backend. `auto` is probed from the installed toolchain, and is on when the CUDA toolkit is found; passing an explicit value always wins. On Windows it needs MSVC, since nvcc cannot use mingw as its host compiler. |
+| `BREEZE_CUDA_NCCL` | `OFF` | Link `ggml-cuda` against NCCL. Only useful for multi GPU, and ggml turns it on by itself when `libnccl` happens to be installed. |
 | `BREEZE_BUILD_CLI` | `ON` | Build `breeze-cli`. |
 | `BREEZE_BUILD_SERVER` | `ON` | Build `breeze-server`. |
 | `BREEZE_BUILD_SHARED` | `ON` | Build the shared C library. |
@@ -57,9 +93,10 @@ cmake --build build-cpu -j
 
 ### Vulkan or CUDA
 
-Vulkan stays the default. It is a little ahead at Q4_K, level at F16, and it needs no
-toolkit. Measured on an RTX 3060 12 GB with its tensor core limit unlocked, per frame of
-audio (80 ms). The Q4_K and Q8_0 rows are averages over 4 seeds:
+Vulkan stays the default whenever its SDK is installed. It is a little ahead at Q4_K,
+level at F16, and it needs no toolkit. Measured on an RTX 3060 12 GB with its tensor core
+limit unlocked, per frame of audio (80 ms). The Q4_K and Q8_0 rows are averages over 4
+seeds:
 
 | Model | `cfg_scale` | Backend | Backbone | Depth | Vocoder | Total per frame | Real time factor |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -97,6 +134,49 @@ F16 with a Q4_K depth decoder spends about 25 ms.
 Choosing a model, running several streams and tuning are in
 [performance.md](performance.md).
 
+### CUDA specifics
+
+Architectures are probed, not guessed. When `BREEZE_CUDA` is on and
+`CMAKE_CUDA_ARCHITECTURES` was not set, the configure step reads
+`nvidia-smi --query-gpu=compute_cap` and turns `8.6` into `86`, so a first build compiles
+one architecture instead of the eight ggml falls back to. Several cards are read as one
+list, `86;89` for example. `nvidia-smi` missing, failing, or printing something else is
+not an error: the variable is then left undefined and ggml uses its own list. With CMake
+3.24 or newer and `GGML_NATIVE` on, ggml asks nvcc for `native` instead, which is the
+same idea done by the compiler.
+
+Override it when the build machine and the run machine differ, or for a binary you hand
+out:
+
+```
+cmake -B build -DBREEZE_VULKAN=OFF -DBREEZE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;86"
+```
+
+The quotes matter: a bare `;` ends the command in most shells.
+
+An `XX-virtual` entry such as `90-virtual` compiles to PTX instead of device code and is
+JITed on first use, which covers cards newer than the toolkit. Note that setting the
+variable at all takes ggml's own default list out of the picture, and that handing it
+`native` only works when the build runs CMake 3.24 or newer, which is the other reason
+the probe in `CMakeLists.txt` is there.
+
+CUDA graphs are compiled in: `BREEZE_CUDA` turns `GGML_CUDA_GRAPHS` on. The depth decoder
+replays one graph per frame, which is worth the 55 ms to 23 ms per frame quoted above.
+`GGML_CUDA_DISABLE_GRAPHS=1` in the environment turns them off at runtime for a
+comparison.
+
+The binaries need `libcudart` and `libcublas` at runtime. Both ship with the toolkit, so a
+machine with a driver but no toolkit will not run a CUDA build, while the Vulkan build
+only needs the driver. NCCL is a separate matter: ggml links it in as soon as `libnccl` is
+installed, single GPU inference has no use for it, so `BREEZE_CUDA_NCCL` defaults to
+`OFF`.
+
+A CUDA build contains no Vulkan code at all, which is easy to confirm:
+
+```
+ldd build-cuda/breeze-cli | grep -i vulkan   # no output
+```
+
 ## Outputs
 
 | Target | Description |
@@ -120,6 +200,10 @@ backend that was picked:
 ```
 backend: Vulkan0, sample rate: 24000
 ```
+
+A CUDA build prints `backend: CUDA0` instead, and a build with no GPU backend prints
+`backend: CPU`. Nothing else differs, the same binary serves every backend it was
+compiled with and still falls back to the CPU when the GPU cannot be used.
 
 ## mingw specifics
 
@@ -152,6 +236,27 @@ $env:PATH = "C:\path\to\mingw64\bin;" + $env:PATH
 **No Vulkan device found** usually means an outdated GPU driver, or running
 inside a container or remote session without GPU passthrough. It is not fatal;
 the model loads on CPU instead, just slowly.
+
+**`BREEZE_VULKAN=ON needs the Vulkan SDK (glslc) and the SPIRV-Headers CMake package`**
+means you asked for the Vulkan backend on a machine that cannot build it. Leaving the
+flag out probes for the SDK and builds without Vulkan when it is missing, which is what
+most CUDA machines want; an older version defaulted the option to `ON`, so a bare
+`cmake -B build` that used to fail here now just works. Install the SDK (the LunarG
+installer on Windows, `vulkan-sdk` or the LunarG tarball on Linux) if you do want Vulkan,
+or pass `-DBREEZE_VULKAN=OFF`.
+
+**`BREEZE_CUDA=ON needs the CUDA toolkit`** is the same thing for `nvcc`. Set
+`CUDAToolkit_ROOT` when the toolkit is installed somewhere the find module does not look.
+
+**`nvcc fatal: Unsupported gpu architecture 'compute_XXX'`** comes from
+`CMAKE_CUDA_ARCHITECTURES` naming a card newer than the toolkit, typically in a build tree
+reused from another machine. Pass architectures the toolkit knows, for instance
+`-DCMAKE_CUDA_ARCHITECTURES=86`, or delete the build directory and let it be probed
+again. If instead the program starts and reports **`no kernel image is available for
+execution on the device`**, the binary was built for a different card than it is running
+on: rebuild for the compute capability of that card
+(`nvidia-smi --query-gpu=compute_cap --format=csv,noheader`) or add an `XX-virtual` entry
+so PTX JIT can fill the gap.
 
 **Out of video memory** during generation: use a smaller quantization. Q4_K
 needs roughly 3 GB of VRAM against about 7 GB for F16. See

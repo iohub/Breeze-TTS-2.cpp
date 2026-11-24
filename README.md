@@ -93,7 +93,8 @@ Which model to pick, how many streams a card can hold, what each setting does no
 your own card are all in [docs/performance.md](docs/performance.md). One change to know about: if you
 raised `--chunk-max` on an older version, take it off, it no longer gains anything.
 
-Vulkan stays the default, the reasons and the per stage numbers are in [docs/build.md](docs/build.md).
+Vulkan stays the default wherever its SDK is installed. The reasons and the per stage numbers are in
+[docs/build.md](docs/build.md).
 
 ## Documentation
 
@@ -147,8 +148,21 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-Add `-DBREEZE_VULKAN=OFF` for a CPU only build. Outputs are `breeze-cli`, `breeze-convert`,
-`breeze-server`, `breeze-quantize` and the shared library. See [docs/build.md](docs/build.md).
+Add `-DBREEZE_VULKAN=OFF -DBREEZE_CUDA=OFF` for a CPU only build. Outputs are
+`breeze-cli`, `breeze-convert`, `breeze-server`, `breeze-quantize` and the shared
+library. See [docs/build.md](docs/build.md).
+
+The GPU backend is probed at configure time, so the commands above build whichever one
+this machine can actually compile: CUDA where the toolkit is installed, Vulkan where the
+SDK is, CPU where there is neither. For CUDA on a machine that also has the Vulkan SDK:
+
+```
+cmake -B build-cuda -DCMAKE_BUILD_TYPE=Release -DBREEZE_VULKAN=OFF -DBREEZE_CUDA=ON
+cmake --build build-cuda -j
+```
+
+`cmake --preset cuda`, `--preset vulkan` and `--preset cpu` do the same three trees, the
+CUDA one included, and pick the local GPU architecture on their own.
 
 ### Nix
 

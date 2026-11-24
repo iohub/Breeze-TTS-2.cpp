@@ -1,0 +1,63 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 19,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "cpu",
+      "displayName": "CPU only",
+      "description": "No GPU backend at all. Needs nothing but a C++17 compiler.",
+      "binaryDir": "${sourceDir}/build-cpu",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BREEZE_VULKAN": "OFF",
+        "BREEZE_CUDA": "OFF"
+      }
+    },
+    {
+      "name": "vulkan",
+      "displayName": "Vulkan",
+      "description": "Vulkan backend. Needs the Vulkan SDK (glslc) and the SPIRV-Headers CMake package.",
+      "binaryDir": "${sourceDir}/build-vulkan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BREEZE_VULKAN": "ON",
+        "BREEZE_CUDA": "OFF"
+      }
+    },
+    {
+      "name": "cuda",
+      "displayName": "CUDA",
+      "description": "CUDA backend. Needs the CUDA toolkit (nvcc); the GPU architecture is probed from nvidia-smi.",
+      "binaryDir": "${sourceDir}/build-cuda",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BREEZE_VULKAN": "OFF",
+        "BREEZE_CUDA": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "cpu",
+      "displayName": "Build the CPU only tree",
+      "description": "Builds build-cpu.",
+      "configurePreset": "cpu"
+    },
+    {
+      "name": "vulkan",
+      "displayName": "Build the Vulkan tree",
+      "description": "Builds build-vulkan.",
+      "configurePreset": "vulkan"
+    },
+    {
+      "name": "cuda",
+      "displayName": "Build the CUDA tree",
+      "description": "Builds build-cuda.",
+      "configurePreset": "cuda"
+    }
+  ]
+}

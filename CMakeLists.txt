@@ -10,8 +10,53 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-option(BREEZE_VULKAN "Build ggml with the Vulkan backend" ON)
-option(BREEZE_CUDA "Build ggml with the CUDA backend" OFF)
+# ggml hard fails when the Vulkan SDK is missing, and its own CUDA fallback compiles 8
+# architectures. So both backends are probed here, against the toolchain that is really
+# installed, and CMAKE_CUDA_ARCHITECTURES is narrowed to the local GPU. A plain
+# `cmake -B build` then works on a CUDA only machine and on a Vulkan only machine alike.
+# An explicit -D on the command line always wins, the probes only supply the defaults.
+
+# the same judgement ggml's Vulkan backend makes: a loader, glslc and the SPIRV headers
+function(breeze_vulkan_ready out)
+    find_package(Vulkan QUIET COMPONENTS glslc)
+    find_package(SPIRV-Headers CONFIG QUIET)
+    set(ready FALSE)
+    if(Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE AND SPIRV-Headers_FOUND)
+        set(ready TRUE)
+    endif()
+    set(${out} ${ready} PARENT_SCOPE)
+endfunction()
+
+function(breeze_cuda_ready out)
+    find_package(CUDAToolkit QUIET)
+    set(${out} ${CUDAToolkit_FOUND} PARENT_SCOPE)
+    set(BREEZE_CUDA_VERSION ${CUDAToolkit_VERSION} PARENT_SCOPE)
+endfunction()
+
+if(NOT DEFINED BREEZE_VULKAN)
+    breeze_vulkan_ready(BREEZE_VULKAN_DEFAULT)
+    if(BREEZE_VULKAN_DEFAULT)
+        message(STATUS "breeze: Vulkan SDK found (glslc + SPIRV-Headers), enabling the Vulkan backend")
+    else()
+        message(STATUS "breeze: Vulkan SDK not found (needs glslc + SPIRV-Headers), building without the Vulkan backend")
+    endif()
+else()
+    set(BREEZE_VULKAN_DEFAULT ${BREEZE_VULKAN})
+endif()
+option(BREEZE_VULKAN "Build ggml with the Vulkan backend" ${BREEZE_VULKAN_DEFAULT})
+
+if(NOT DEFINED BREEZE_CUDA)
+    breeze_cuda_ready(BREEZE_CUDA_DEFAULT)
+    if(BREEZE_CUDA_DEFAULT)
+        message(STATUS "breeze: CUDA toolkit ${BREEZE_CUDA_VERSION} found, enabling the CUDA backend")
+    else()
+        message(STATUS "breeze: CUDA toolkit not found, building without the CUDA backend")
+    endif()
+else()
+    set(BREEZE_CUDA_DEFAULT ${BREEZE_CUDA})
+endif()
+option(BREEZE_CUDA "Build ggml with the CUDA backend" ${BREEZE_CUDA_DEFAULT})
+option(BREEZE_CUDA_NCCL "Link ggml-cuda against NCCL, only needed for multi GPU" OFF)
 option(BREEZE_BUILD_CLI "Build the command line app" ON)
 option(BREEZE_BUILD_SERVER "Build the HTTP server" ON)
 option(BREEZE_MP3 "Let the server encode mp3 with the shine submodule" ON)
@@ -22,16 +67,89 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/CMakeLists.txt")
     message(FATAL_ERROR "third_party/ggml is missing. Run: git submodule update --init --recursive")
 endif()
 
+# an explicit request has to fail here and say why, not somewhere deep inside ggml
+if(BREEZE_VULKAN)
+    breeze_vulkan_ready(breeze_vulkan_ok)
+    if(NOT breeze_vulkan_ok)
+        message(FATAL_ERROR
+            "BREEZE_VULKAN=ON needs the Vulkan SDK (glslc) and the SPIRV-Headers CMake package.\n"
+            "Install them, or configure with -DBREEZE_VULKAN=OFF to build the CUDA or the CPU backend instead.")
+    endif()
+    unset(breeze_vulkan_ok)
+endif()
+
+if(BREEZE_CUDA)
+    breeze_cuda_ready(breeze_cuda_ok)
+    if(NOT breeze_cuda_ok)
+        message(FATAL_ERROR
+            "BREEZE_CUDA=ON needs the CUDA toolkit (nvcc not found or CUDAToolkit_FOUND is false).\n"
+            "Install the toolkit, or configure with -DBREEZE_CUDA=OFF.")
+    endif()
+    unset(breeze_cuda_ok)
+endif()
+
+# ggml only picks its own 8 architecture list when this is undefined, so build for the
+# local GPUs instead and leave the variable alone when the user set it on the command line
+if(BREEZE_CUDA AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    find_program(BREEZE_NVIDIA_SMI nvidia-smi)
+    mark_as_advanced(BREEZE_NVIDIA_SMI)
+    if(BREEZE_NVIDIA_SMI)
+        execute_process(COMMAND ${BREEZE_NVIDIA_SMI} --query-gpu=compute_cap --format=csv,noheader
+                        OUTPUT_VARIABLE breeze_compute_caps
+                        RESULT_VARIABLE breeze_compute_caps_rc
+                        ERROR_QUIET
+                        TIMEOUT 15)
+        if(breeze_compute_caps_rc EQUAL 0)
+            # one line per gpu, windows ends them with \r\n
+            string(REPLACE "\r" "" breeze_compute_caps "${breeze_compute_caps}")
+            string(REPLACE "\n" ";" breeze_compute_caps "${breeze_compute_caps}")
+            set(breeze_cuda_archs "")
+            foreach(breeze_cap ${breeze_compute_caps})
+                string(STRIP "${breeze_cap}" breeze_cap)
+                if(breeze_cap MATCHES "^([0-9]+)\\.([0-9]+)$")
+                    list(APPEND breeze_cuda_archs "${CMAKE_MATCH_1}${CMAKE_MATCH_2}")
+                endif()
+            endforeach()
+            if(breeze_cuda_archs)
+                list(REMOVE_DUPLICATES breeze_cuda_archs)
+                set(CMAKE_CUDA_ARCHITECTURES ${breeze_cuda_archs} CACHE STRING
+                    "CUDA architectures to generate code for" FORCE)
+                set(breeze_cuda_archs_sm "")
+                foreach(breeze_arch ${breeze_cuda_archs})
+                    string(APPEND breeze_cuda_archs_sm " sm_${breeze_arch}")
+                endforeach()
+                message(STATUS "breeze: building CUDA for the local GPU:${breeze_cuda_archs_sm}")
+            endif()
+        endif()
+    endif()
+endif()
+
 set(GGML_VULKAN ${BREEZE_VULKAN} CACHE BOOL "" FORCE)
 set(GGML_CUDA ${BREEZE_CUDA} CACHE BOOL "" FORCE)
 # ggml leaves these off unless its built by llama.cpp
 set(GGML_CUDA_GRAPHS ${BREEZE_CUDA} CACHE BOOL "" FORCE)
+# ggml turns this on whenever libnccl happens to be installed, and then every binary needs it
+set(GGML_CUDA_NCCL ${BREEZE_CUDA_NCCL} CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 if(MINGW)
     # libgomp has no static build here, and it would leak into the shared library
     set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 endif()
+
+set(breeze_backends "CPU")
+if(BREEZE_VULKAN)
+    list(APPEND breeze_backends "Vulkan")
+endif()
+if(BREEZE_CUDA)
+    list(APPEND breeze_backends "CUDA")
+endif()
+if(BREEZE_VULKAN AND BREEZE_CUDA)
+    message(STATUS "breeze: Vulkan and CUDA are both built into libggml and ggml picks one at "
+                   "runtime, add -DBREEZE_VULKAN=OFF to keep only CUDA")
+endif()
+message(STATUS "breeze: backends = ${breeze_backends}")
+
 # msvc builds ggml as dlls, they have to land next to the exes
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_subdirectory(third_party/ggml)

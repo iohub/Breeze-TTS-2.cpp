@@ -84,7 +84,7 @@ The configure step prints what it settled on, which is worth a look:
 | Option | Default | Effect |
 | --- | --- | --- |
 | `BREEZE_VULKAN` | `auto` | Build ggml with the Vulkan backend. `auto` is probed from the installed toolchain, and is on only when `glslc` and the `SPIRV-Headers` CMake package are both found; passing an explicit value always wins. |
-| `BREEZE_CUDA` | `auto` | Build ggml with the CUDA backend. `auto` is probed from the installed toolchain, and is on when the CUDA toolkit is found; passing an explicit value always wins. On Windows it needs MSVC, since nvcc cannot use mingw as its host compiler. |
+| `BREEZE_CUDA` | `auto` | Build ggml with the CUDA backend. `auto` is probed from the installed toolchain, and is on when the CUDA toolkit is found, but never under mingw, where nvcc cannot use mingw as its host compiler; passing an explicit value always wins, and an explicit `ON` under mingw stops the configure step with that reason instead of failing later in nvcc. |
 | `BREEZE_CUDA_NCCL` | `OFF` | Link `ggml-cuda` against NCCL. Only useful for multi GPU, and ggml turns it on by itself when `libnccl` happens to be installed. |
 | `BREEZE_BUILD_CLI` | `ON` | Build `breeze-cli`. |
 | `BREEZE_BUILD_SERVER` | `ON` | Build `breeze-server`. |
@@ -141,7 +141,10 @@ Architectures are probed, not guessed. When `BREEZE_CUDA` is on and
 `nvidia-smi --query-gpu=compute_cap` and turns `8.6` into `86`, so a first build compiles
 one architecture instead of the eight ggml falls back to. Several cards are read as one
 list, `86;89` for example. `nvidia-smi` missing, failing, or printing something else is
-not an error: the variable is then left undefined and ggml uses its own list. With CMake
+not an error: the variable is then left undefined and ggml uses its own list. Cross
+compiling skips the probe altogether, because the build machine's cards say nothing about
+the target: with `CMAKE_CROSSCOMPILING` set, `nvidia-smi` is not read at all and
+`CMAKE_CUDA_ARCHITECTURES` is left for you to pass. With CMake
 3.24 or newer and `GGML_NATIVE` on, ggml asks nvcc for `native` instead, which is the
 same idea done by the compiler.
 

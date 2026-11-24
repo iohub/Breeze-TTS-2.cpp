@@ -47,7 +47,12 @@ option(BREEZE_VULKAN "Build ggml with the Vulkan backend" ${BREEZE_VULKAN_DEFAUL
 
 if(NOT DEFINED BREEZE_CUDA)
     breeze_cuda_ready(BREEZE_CUDA_DEFAULT)
-    if(BREEZE_CUDA_DEFAULT)
+    if(MINGW)
+        # a CUDA toolkit on a mingw machine is useless, nvcc cannot use mingw as its host
+        # compiler, so never turn the backend on by default here, only on request (which fails below)
+        set(BREEZE_CUDA_DEFAULT OFF)
+        message(STATUS "breeze: mingw cannot be the host compiler for nvcc, building without the CUDA backend")
+    elseif(BREEZE_CUDA_DEFAULT)
         message(STATUS "breeze: CUDA toolkit ${BREEZE_CUDA_VERSION} found, enabling the CUDA backend")
     else()
         message(STATUS "breeze: CUDA toolkit not found, building without the CUDA backend")
@@ -79,6 +84,12 @@ if(BREEZE_VULKAN)
 endif()
 
 if(BREEZE_CUDA)
+    # this has to come before the toolkit check, a toolkit is not the problem here
+    if(MINGW)
+        message(FATAL_ERROR
+            "BREEZE_CUDA=ON needs MSVC as the host compiler on Windows, nvcc cannot use mingw.\n"
+            "Configure with -DBREEZE_CUDA=OFF, or build with the MSVC toolchain.")
+    endif()
     breeze_cuda_ready(breeze_cuda_ok)
     if(NOT breeze_cuda_ok)
         message(FATAL_ERROR
@@ -89,8 +100,14 @@ if(BREEZE_CUDA)
 endif()
 
 # ggml only picks its own 8 architecture list when this is undefined, so build for the
-# local GPUs instead and leave the variable alone when the user set it on the command line
-if(BREEZE_CUDA AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+# local GPUs instead and leave the variable alone when the user set it on the command line.
+# cross compiling means the local GPUs say nothing about the target, so stay out of the way
+if(BREEZE_CUDA AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND CMAKE_CROSSCOMPILING)
+    message(STATUS "breeze: cross compiling, so the local GPU is not the target GPU, leaving "
+                   "CMAKE_CUDA_ARCHITECTURES unset and letting ggml use its own architecture list, "
+                   "pass -DCMAKE_CUDA_ARCHITECTURES=<list> to choose the target ones")
+endif()
+if(BREEZE_CUDA AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT CMAKE_CROSSCOMPILING)
     find_program(BREEZE_NVIDIA_SMI nvidia-smi)
     mark_as_advanced(BREEZE_NVIDIA_SMI)
     if(BREEZE_NVIDIA_SMI)
